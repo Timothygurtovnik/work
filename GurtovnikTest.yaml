@@ -1,0 +1,99 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+spec:
+  replicas: 4  # Начальное количество подов, соответствующее пиковой нагрузке
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - web-app
+              topologyKey: "topology.kubernetes.io/zone"
+      # Используем podAntiAffinity для распределения подов по разным зонам
+      # Это повышает отказоустойчивость, так как при выходе из строя одной зоны,
+      # приложение продолжит работать в других зонах
+      
+      initContainers:
+      - name: init-web-app
+        image: your-registry/web-app-init:latest
+        command: ['sh', '-c', 'echo Warming up application && sleep 10']
+      # initContainer для "разогрева" приложения
+      # Это поможет снизить нагрузку на основной контейнер при старте
+      
+      containers:
+      - name: web-app
+        image: your-registry/web-app:latest
+        resources:
+          requests:
+            cpu: 100m  # Запрашиваем 0.1 CPU, как указано в требованиях
+            memory: 128Mi
+          limits:
+            cpu: 500m  # Устанавливаем лимит выше для обработки пиковых нагрузок
+            memory: 256Mi  # Небольшой запас по памяти
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        # Пробы для проверки готовности и жизнеспособности приложения
+        # Учитываем время инициализации в 5-10 секунд
+        
+---
+apiVersion: autoscaling/v2beta1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-app-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-app
+  minReplicas: 2  # Минимум 2 пода для обеспечения отказоустойчивости
+  maxReplicas: 8  # Максимум в два раза больше пиковой нагрузки для запаса
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      targetAverageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+      - type: Pods
+        value: 2
+        periodSeconds: 15
+  # HPA для автоматического масштабирования
+  # Агрессивное масштабирование вверх для быстрой реакции на пиковые нагрузки
+  # Медленное масштабирование вниз для стабильности и экономии ресурсов ночью
